@@ -35,7 +35,9 @@ internal sealed class TaxiDatabase(string path)
             );
 
             INSERT OR IGNORE INTO tariffs (name, base_price, price_per_km, price_per_minute)
-            VALUES ('Эконом', 100, 20, 5);
+            VALUES ('Эконом', 100, 20, 5),
+                   ('Комфорт', 160, 30, 7),
+                   ('Бизнес', 250, 45, 10);
             """;
         command.ExecuteNonQuery();
         transaction.Commit();
@@ -78,4 +80,30 @@ internal sealed class TaxiDatabase(string path)
         command.Parameters.AddWithValue("$total", (long)(total * 100));
         command.ExecuteNonQuery();
     }
+
+    public List<Calculation> GetRecentCalculations()
+    {
+        using var connection = new SqliteConnection(connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT datetime(created_at, 'localtime'), tariff, distance_km, wait_minutes, total_kopecks
+            FROM calculations
+            ORDER BY id DESC
+            LIMIT 100
+            """;
+
+        var calculations = new List<Calculation>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            calculations.Add(new Calculation(reader.GetDateTime(0), reader.GetString(1),
+                (decimal)reader.GetDouble(2), reader.GetInt32(3), reader.GetInt64(4) / 100m));
+        }
+
+        return calculations;
+    }
 }
+
+internal record Calculation(DateTime Time, string TariffName, decimal Distance, int WaitMinutes,
+    decimal Total);

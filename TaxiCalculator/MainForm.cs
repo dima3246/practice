@@ -3,65 +3,42 @@ using Microsoft.Data.Sqlite;
 
 namespace TaxiCalculator;
 
-internal sealed class MainForm : Form
+public partial class MainForm : Form
 {
-    private readonly TaxiDatabase database;
-    private readonly Tariff tariff;
-    private readonly TextBox distanceInput = new() { Dock = DockStyle.Fill };
-    private readonly TextBox waitInput = new() { Text = "0", Dock = DockStyle.Fill };
-    private readonly Label result = new() { Text = "Введите данные поездки.", AutoSize = true };
+    private TaxiDatabase database = null!;
+    private Tariff[] tariffs = [];
     private static readonly CultureInfo Russian = CultureInfo.GetCultureInfo("ru-RU");
 
-    public MainForm(TaxiDatabase database)
+    public MainForm()
     {
-        this.database = database;
-        tariff = database.GetTariffs()[0];
-        Text = "Калькулятор такси — версия 1";
-        StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(570, 335);
-        MinimumSize = new Size(520, 340);
-
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(CreateCalculator());
-        tabs.TabPages.Add(CreateExperiment());
-        Controls.Add(tabs);
+        InitializeComponent();
     }
 
-    private TabPage CreateCalculator()
+    internal MainForm(TaxiDatabase database) : this()
     {
-        var page = new TabPage("Расчёт");
-        var form = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            Padding = new Padding(16),
-            AutoScroll = true
-        };
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        form.Controls.Add(new Label { Text = "Расстояние, км", AutoSize = true }, 0, 0);
-        form.Controls.Add(distanceInput, 1, 0);
-        form.Controls.Add(new Label { Text = "Ожидание, мин", AutoSize = true }, 0, 1);
-        form.Controls.Add(waitInput, 1, 1);
+        this.database = database;
+        tariffs = database.GetTariffs();
 
-        var rates = new Label
-        {
-            Text = $"{tariff.Name}: подача {tariff.BasePrice} ₽, "
-                + $"{tariff.PricePerKm} ₽/км, {tariff.PricePerMinute} ₽/мин ожидания.",
-            AutoSize = true,
-            Margin = new Padding(3, 12, 3, 8)
-        };
-        form.Controls.Add(rates, 0, 2);
-        form.SetColumnSpan(rates, 2);
+        tariffInput.Items.AddRange(tariffs.Select(tariff => tariff.Name).ToArray());
+        tariffInput.SelectedIndex = 0;
+        UpdateRates();
 
-        var calculateButton = new Button { Text = "Рассчитать", AutoSize = true };
+        foreach (Tariff tariff in tariffs)
+            experimentGrid.Columns.Add(tariff.Name, tariff.Name);
+
+        UpdateExperiment();
+        tariffInput.SelectedIndexChanged += (_, _) => UpdateRates();
         calculateButton.Click += Calculate;
-        form.Controls.Add(calculateButton, 1, 3);
-        form.Controls.Add(result, 0, 4);
-        form.SetColumnSpan(result, 2);
-        page.Controls.Add(form);
-        AcceptButton = calculateButton;
-        return page;
+        tabs.Selected += ShowHistory;
+        experimentWait.ValueChanged += (_, _) => UpdateExperiment();
+    }
+
+    private void UpdateRates()
+    {
+        Tariff tariff = tariffs[tariffInput.SelectedIndex];
+        rates.Text = $"Подача {tariff.BasePrice} ₽, {tariff.PricePerKm} ₽/км, "
+            + $"{tariff.PricePerMinute} ₽/мин ожидания.";
+        result.Text = "Введите данные поездки.";
     }
 
     private void Calculate(object? sender, EventArgs e)
@@ -83,6 +60,7 @@ internal sealed class MainForm : Form
             return;
         }
 
+        Tariff tariff = tariffs[tariffInput.SelectedIndex];
         decimal total = tariff.Calculate(distance, waitMinutes);
         try
         {
@@ -95,39 +73,42 @@ internal sealed class MainForm : Form
         }
     }
 
-    private TabPage CreateExperiment()
+    private void ShowHistory(object? sender, TabControlEventArgs e)
     {
-        var page = new TabPage("Эксперимент");
-        var grid = CreateGrid();
-        grid.Columns.Add("Distance", "Расстояние, км");
-        grid.Columns.Add("Total", "Стоимость по тарифу «Эконом»");
-        foreach (int distance in new[] { 1, 5, 10, 20 })
-        {
-            grid.Rows.Add(distance, Money(tariff.Calculate(distance, 0)));
-        }
+        if (e.TabPage != historyPage)
+            return;
 
-        page.Controls.Add(grid);
-        page.Controls.Add(new Label
+        historyGrid.Rows.Clear();
+        try
         {
-            Text = "Меняем расстояние. Ожидание во всех расчётах — 0 минут.",
-            Dock = DockStyle.Top,
-            Height = 28,
-            TextAlign = ContentAlignment.MiddleLeft
-        });
-        return page;
+            List<Calculation> calculations = database.GetRecentCalculations();
+            foreach (Calculation entry in calculations)
+            {
+                historyGrid.Rows.Add(entry.Time.ToString("dd.MM.yyyy HH:mm", Russian), entry.TariffName,
+                    entry.Distance.ToString("0.##", Russian), entry.WaitMinutes, Money(entry.Total));
+            }
+
+            historyStatus.Text = calculations.Count == 0
+                ? "Расчётов пока нет."
+                : "Последние расчёты (до 100 записей)";
+        }
+        catch (SqliteException)
+        {
+            historyStatus.Text = "Не удалось загрузить историю.";
+        }
     }
 
-    private static DataGridView CreateGrid()
+    private void UpdateExperiment()
     {
-        return new DataGridView
+        experimentGrid.Rows.Clear();
+        foreach (int distance in new[] { 1, 5, 10, 20 })
         {
-            Dock = DockStyle.Fill,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-            AllowUserToAddRows = false,
-            AllowUserToDeleteRows = false,
-            ReadOnly = true,
-            RowHeadersVisible = false
-        };
+            var row = new object[tariffs.Length + 1];
+            row[0] = distance;
+            for (int index = 0; index < tariffs.Length; index++)
+                row[index + 1] = Money(tariffs[index].Calculate(distance, (int)experimentWait.Value));
+            experimentGrid.Rows.Add(row);
+        }
     }
 
     private static string Money(decimal amount) => amount.ToString("N2", Russian) + " ₽";
